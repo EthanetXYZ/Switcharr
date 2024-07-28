@@ -1,9 +1,9 @@
-require('dotenv').config();
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const winston = require('winston');
+const session = require('express-session');
 
 const app = express();
 
@@ -22,13 +22,19 @@ const logger = winston.createLogger({
 // Environment variables for configuration
 const TITLE_DB_URL = process.env.TITLE_DB_URL || 'https://github.com/blawar/titledb/raw/master/AU.en.json';
 const SUCCESS_MESSAGE = process.env.SUCCESS_MESSAGE || "Operation Successful";
-const HOST = process.env.HOST;
+const HOST = process.env.HOST || '0.0.0.0';
 const PORT = parseInt(process.env.PORT, 10) || 9000;
+const EXTERNAL_URL = process.env.EXTERNAL_URL || `http://localhost:${PORT}`; // Single variable for full external URL
 
 const TITLE_DB_PATH = path.join('/games/title.db');
 
-// Store to track if the message has been shown
-let messageShown = false;
+// Configure session middleware
+app.use(session({
+  secret: 'your-secret-key',
+  resave: false,
+  saveUninitialized: true,
+  cookie: { secure: false }
+}));
 
 async function downloadTitleDb() {
   try {
@@ -47,7 +53,7 @@ async function downloadTitleDb() {
 function getGameMetadata(filePath) {
   logger.info(`Extracting metadata for ${filePath}`);
   return {
-    url: `http://${HOST}:${PORT}/download/${path.basename(filePath)}`,
+    url: `${EXTERNAL_URL}/download/${path.basename(filePath)}`,
     size: fs.statSync(filePath).size,
   };
 }
@@ -72,35 +78,66 @@ function scanGames(directory) {
 }
 
 app.get('/', (req, res) => {
-  logger.info('Received request for game list');
+  logger.info(`Incoming request: ${req.method} ${req.url} from ${req.ip}`);
+  logger.info(`Headers: ${JSON.stringify(req.headers)}`);
+
   const files = scanGames('/games');
+
+  // Reset message shown flag for each new request cycle
+  if (!req.session.messageShown) {
+    req.session.messageShown = true; // Mark message as shown for this session
+    logger.info(`Shop view response sent with success message: ${SUCCESS_MESSAGE}`);
+  }
 
   const response = {
     files: files,
     directories: files.map(file => file.url),
+    success: SUCCESS_MESSAGE
   };
 
-  // Include the success message only if it hasn't been shown yet
-  if (!messageShown) {
-    response.success = SUCCESS_MESSAGE;
-    messageShown = true; // Set the flag to true after showing the message
-    logger.info(`Success message sent: ${SUCCESS_MESSAGE}`);
-  }
-  
   logger.info(`Response being sent: ${JSON.stringify(response)}`);
   res.json(response);
 });
 
 app.get('/download/:filename', (req, res) => {
   const { filename } = req.params;
-  logger.info(`Received request to download file: ${filename}`);
   const file = path.join('/games', filename);
-  res.download(file, filename, (err) => {
-    if (err) {
-      logger.error(`Error occurred while sending file: ${err.message}`);
-      res.status(404).send('File not found');
+
+  if (fs.existsSync(file)) {
+    // Check for Range header and handle it
+    const range = req.headers.range;
+    if (range) {
+      const bytesPattern = /bytes=(\d+)-(\d*)/;
+      const match = range.match(bytesPattern);
+
+      if (match) {
+        const start = parseInt(match[1], 10);
+        const end = match[2] ? parseInt(match[2], 10) : fs.statSync(file).size - 1;
+
+        const CHUNK_SIZE_THRESHOLD = 1048576; // 1 MB
+        const chunkSize = end - start + 1;
+
+        if (chunkSize <= CHUNK_SIZE_THRESHOLD) {
+          logger.info(`Received range request (likely metadata check) for file: ${filename} from ${req.ip}`);
+          res.status(206).end(); // Send partial content status
+          return;
+        }
+      }
     }
-  });
+
+    // If no range or large range indicating download
+    logger.info(`Received request to download file: ${filename} from ${req.ip}`);
+
+    res.download(file, filename, (err) => {
+      if (err) {
+        logger.error(`Error occurred while sending file: ${err.message}`);
+        res.status(500).send('Error occurred while downloading the file');
+      }
+    });
+  } else {
+    logger.warn(`File not found: ${filename}`);
+    res.status(404).send('File not found');
+  }
 });
 
 app.listen(PORT, HOST, async () => {

@@ -3,3 +3,5 @@ npm-debug.log
 Dockerfile
 .dockerignore
 .env
+package.json
+package-lock.json
