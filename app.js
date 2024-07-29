@@ -3,7 +3,6 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const winston = require('winston');
-const session = require('express-session');
 
 const app = express();
 
@@ -28,22 +27,16 @@ const EXTERNAL_URL = process.env.EXTERNAL_URL || `http://localhost:${PORT}`; // 
 
 const TITLE_DB_PATH = path.join('/games/title.db');
 
-// Configure session middleware
-app.use(session({
-  secret: 'your-secret-key',
-  resave: false,
-  saveUninitialized: true,
-  cookie: { secure: false }
-}));
+let messageShown = false;
 
 async function downloadTitleDb() {
   try {
-    const response = await axios.get(TITLE_DB_URL, { responseType: 'arraybuffer' });
-    if (response.status === 200) {
-      fs.writeFileSync(TITLE_DB_PATH, response.data);
+    const resData = await axios.get(TITLE_DB_URL, { responseType: 'arraybuffer' });
+    if (resData.status === 200) {
+      fs.writeFileSync(TITLE_DB_PATH, resData.data);
       logger.info('Title database downloaded successfully.');
     } else {
-      logger.error(`Failed to download title database. Status code: ${response.status}`);
+      logger.error(`Failed to download title database. Status code: ${resData.status}`);
     }
   } catch (error) {
     logger.error(`An error occurred while downloading title database: ${error.message}`);
@@ -83,17 +76,18 @@ app.get('/', (req, res) => {
 
   const files = scanGames('/games');
 
-  // Reset message shown flag for each new request cycle
-  if (!req.session.messageShown) {
-    req.session.messageShown = true; // Mark message as shown for this session
-    logger.info(`Shop view response sent with success message: ${SUCCESS_MESSAGE}`);
-  }
+ // Construct the response object
+ const response = {
+  files: files,
+  directories: files.map(file => file.url),
+};
 
-  const response = {
-    files: files,
-    directories: files.map(file => file.url),
-    success: SUCCESS_MESSAGE
-  };
+// Include the success message only if it hasn't been shown yet
+if (!messageShown) {
+  response.success = SUCCESS_MESSAGE;
+  messageShown = true; // Set the flag to true after showing the message
+  logger.info(`Success message sent: ${SUCCESS_MESSAGE}`);
+}
 
   logger.info(`Response being sent: ${JSON.stringify(response)}`);
   res.json(response);
